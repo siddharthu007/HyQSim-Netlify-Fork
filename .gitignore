@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Build outputs
+frontend/dist/
+frontend/build/
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.Python
+build/
+dist/
+*.egg-info/
+
+# Python virtual environment
+backend/venv/
+venv/
+.venv/
+env/
+
+# External dependencies (install separately)
+bosonic-qiskit/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Testing
+coverage/
+.coverage
+htmlcov/
+.pytest_cache/
