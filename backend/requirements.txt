@@ -1,0 +1,19 @@
+# Web framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0.0
+
+# CORS for frontend communication
+python-multipart>=0.0.6
+
+# Quantum simulation
+qiskit>=1.0.0
+qiskit-aer>=0.13.0
+# Install bosonic-qiskit from local clone or GitHub:
+# pip install -e ../bosonic-qiskit
+# OR: pip install git+https://github.com/C2QA/bosonic-qiskit.git
+
+# Numerical and visualization
+numpy>=1.24.0
+scipy>=1.11.0
+matplotlib>=3.8.0
