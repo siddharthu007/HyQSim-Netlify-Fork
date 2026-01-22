@@ -140,10 +140,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for full setup instructions.
 - **Backend**: Python 3.12, FastAPI, Qiskit, bosonic-qiskit
 - **Visualization**: Custom Wigner function computation, CSS 3D Bloch sphere
 
-## License
-
-MIT License
-
 ## Acknowledgments
 
 - [bosonic-qiskit](https://github.com/C2QA/bosonic-qiskit) by C2QA for CV-DV quantum simulation
