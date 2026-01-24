@@ -151,7 +151,7 @@ winget install Git.Git
 
 ### Installation
 
-Clone the repository and run the installation script:
+Clone the repository and run the installation script using git-bash:
 
 ```bash
 git clone <repository-url>
