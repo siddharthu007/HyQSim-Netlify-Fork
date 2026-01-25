@@ -444,7 +444,7 @@ def compute_wigner_from_density_matrix(
     dm_array: np.ndarray,
     fock_truncation: int,
     grid_size: int = 80,
-    x_range: float = 5.0
+    x_range: float = 6.0
 ) -> tuple[list[list[float]], float]:
     """
     Compute Wigner function from density matrix using qutip.
@@ -465,9 +465,10 @@ def compute_wigner_from_density_matrix(
     # Create qutip density matrix
     rho = qutip.Qobj(dm_truncated, dims=[[dm_size], [dm_size]])
 
-    # Compute Wigner function
+    # Compute Wigner function with g=2 to match browser's convention
+    # Browser uses W(x,p) = (2/π) * exp(-2(x² + p²)) which corresponds to g=2
     xvec = np.linspace(-x_range, x_range, grid_size)
-    W = qutip.wigner(rho, xvec, xvec)
+    W = qutip.wigner(rho, xvec, xvec, g=2)
 
     # Transpose: qutip returns W[x_idx, p_idx], but frontend expects W[p_idx, x_idx]
     # for proper display with x horizontal and p vertical
