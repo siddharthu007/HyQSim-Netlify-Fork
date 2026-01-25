@@ -24,7 +24,7 @@ export default function QumodeDisplay({
   const fockAmplitudes = state?.fockAmplitudes ?? createVacuumAmplitudes(fockTruncation);
   const meanPhotonNumber = state?.meanPhotonNumber ?? 0;
   const precomputedWigner = state?.wignerData;
-  const wignerRange = state?.wignerRange ?? 5;
+  const wignerRange = state?.wignerRange ?? 6;
   const densityMatrix = state?.densityMatrix;
 
   // Generate Wigner function from state
@@ -46,12 +46,12 @@ export default function QumodeDisplay({
     } else if (densityMatrix && densityMatrix.length > 0) {
       // Compute from density matrix (handles mixed states correctly)
       const size = 80;
-      range = 5;
+      range = 6;
       wigner = computeWignerFromDensityMatrix(densityMatrix, size, range);
     } else {
       // Fall back to local computation (only accurate for pure states)
       const size = 80;
-      range = 4;
+      range = 6;
       wigner = computeWignerFunction(fockAmplitudes, size, range);
     }
 
@@ -98,14 +98,14 @@ export default function QumodeDisplay({
       }
     }
 
-    // Draw axes
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
-    ctx.lineWidth = 1;
+    // Draw axes (x=0 and p=0 lines)
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
+    ctx.lineWidth = 0.5;
     ctx.beginPath();
-    // Vertical axis (p axis)
+    // Vertical axis (x=0)
     ctx.moveTo(canvas.width / 2, 0);
     ctx.lineTo(canvas.width / 2, canvas.height);
-    // Horizontal axis (x axis)
+    // Horizontal axis (p=0)
     ctx.moveTo(0, canvas.height / 2);
     ctx.lineTo(canvas.width, canvas.height / 2);
     ctx.stroke();
@@ -207,8 +207,8 @@ export default function QumodeDisplay({
         <div className="relative bg-slate-900 rounded p-2">
           <canvas
             ref={canvasRef}
-            width={140}
-            height={140}
+            width={180}
+            height={180}
             className="mx-auto rounded block"
           />
           {/* Axis labels */}
@@ -217,7 +217,7 @@ export default function QumodeDisplay({
             <span>x (position)</span>
             <span>+{wignerRange}</span>
           </div>
-          <div className="absolute left-1 top-2 h-[140px] flex flex-col justify-between text-[9px] text-slate-400">
+          <div className="absolute left-1 top-2 h-[180px] flex flex-col justify-between text-[9px] text-slate-400">
             <span>+{wignerRange}</span>
             <span className="writing-mode-vertical text-[8px]">p</span>
             <span>-{wignerRange}</span>
