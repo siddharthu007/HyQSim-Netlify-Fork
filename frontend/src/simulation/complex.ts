@@ -95,7 +95,7 @@ export function normalize(vec: StateVector): StateVector {
     norm += abs2(c);
   }
   norm = Math.sqrt(norm);
-  if (norm === 0) return vec;
+  if (norm === 0) return vec.map(() => ZERO);
   return vec.map((c) => scale(c, 1 / norm));
 }
 
