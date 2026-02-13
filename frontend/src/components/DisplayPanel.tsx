@@ -1,6 +1,7 @@
 import type { Wire, SimulationResult, QubitPostSelection } from '../types/circuit';
 import QubitDisplay from './QubitDisplay';
 import QumodeDisplay from './QumodeDisplay';
+import BitstringHistogram from './BitstringHistogram';
 
 type SimulationBackend = 'browser' | 'python';
 
@@ -14,6 +15,8 @@ interface DisplayPanelProps {
   backend: SimulationBackend;
   postSelections: QubitPostSelection[];
   onPostSelectionsChange: (selections: QubitPostSelection[]) => void;
+  shots: number;
+  onShotsChange: (value: number) => void;
 }
 
 export default function DisplayPanel({
@@ -26,6 +29,8 @@ export default function DisplayPanel({
   backend,
   postSelections,
   onPostSelectionsChange,
+  shots,
+  onShotsChange,
 }: DisplayPanelProps) {
   const qubits = wires
     .map((w, idx) => ({ wire: w, wireIndex: idx }))
@@ -67,7 +72,7 @@ export default function DisplayPanel({
         </label>
         {backend === 'python' ? (
           <div className="flex items-center gap-2">
-            {[4, 8, 16, 32].map((val) => (
+            {[4, 8, 16, 32, 64, 128, 256].map((val) => (
               <button
                 key={val}
                 onClick={() => onFockTruncationChange(val)}
@@ -86,7 +91,7 @@ export default function DisplayPanel({
             <input
               type="range"
               min="4"
-              max="32"
+              max="256"
               value={fockTruncation}
               onChange={(e) => onFockTruncationChange(parseInt(e.target.value))}
               className="flex-1 h-2 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-emerald-500"
@@ -98,6 +103,33 @@ export default function DisplayPanel({
           Higher values = more precision, slower simulation
         </p>
       </div>
+
+      {/* Shots control (only for Python backend) */}
+      {backend === 'python' && (
+        <div className="mb-4 p-3 bg-slate-700 rounded-lg">
+          <label className="block text-sm text-slate-300 mb-2">
+            Measurement Shots
+          </label>
+          <div className="flex items-center gap-2">
+            {[256, 512, 1024, 2048].map((val) => (
+              <button
+                key={val}
+                onClick={() => onShotsChange(val)}
+                className={`px-2 py-1.5 rounded text-xs font-mono transition-colors ${
+                  shots === val
+                    ? 'bg-amber-600 text-white'
+                    : 'bg-slate-600 text-slate-300 hover:bg-slate-500'
+                }`}
+              >
+                {val}
+              </button>
+            ))}
+          </div>
+          <p className="text-[10px] text-slate-500 mt-1">
+            Number of shots for bitstring histogram
+          </p>
+        </div>
+      )}
 
       {/* Post-selection controls (only show if there are qubits) */}
       {qubits.length > 0 && (
@@ -236,6 +268,16 @@ export default function DisplayPanel({
                   />
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* Bitstring measurement histogram */}
+          {simulationResult?.bitstringCounts && Object.keys(simulationResult.bitstringCounts).length > 0 && (
+            <div className="mt-4">
+              <h3 className="text-sm font-semibold text-amber-400 mb-2 border-b border-amber-500/30 pb-1">
+                Measurement Counts
+              </h3>
+              <BitstringHistogram counts={simulationResult.bitstringCounts} totalShots={shots} />
             </div>
           )}
         </>

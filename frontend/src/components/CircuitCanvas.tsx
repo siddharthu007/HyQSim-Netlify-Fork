@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import type { Gate, Wire, CircuitElement, QubitInitialState, QumodeInitialState } from '../types/circuit';
 
 // Cycle through qubit initial states
@@ -47,6 +47,22 @@ export default function CircuitCanvas({
   const [dragOverWire, setDragOverWire] = useState<number | null>(null);
   const [hoveredWire, setHoveredWire] = useState<string | null>(null);
   const [hoveredElement, setHoveredElement] = useState<string | null>(null);
+  const [scale, setScale] = useState(1);
+  const canvasRef = useRef<HTMLDivElement>(null);
+
+  // Ctrl+scroll zoom
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const handleWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        setScale((s) => Math.min(2, Math.max(0.2, s - e.deltaY * 0.002)));
+      }
+    };
+    el.addEventListener('wheel', handleWheel, { passive: false });
+    return () => el.removeEventListener('wheel', handleWheel);
+  }, []);
 
   // For hybrid gate placement
   const [pendingHybridGate, setPendingHybridGate] = useState<{
@@ -73,7 +89,7 @@ export default function CircuitCanvas({
 
     const gate: Gate = JSON.parse(gateData);
     const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
+    const x = (e.clientX - rect.left) / scale;
     const wire = wires[wireIndex];
 
     // Handle hybrid gates - need to select both qubit and qumode
@@ -171,6 +187,7 @@ export default function CircuitCanvas({
       return;
     }
 
+    // Custom gates (category === 'custom') can be placed on any wire
     onDropGate(gate, wireIndex, { x, y: 0 });
   };
 
@@ -194,6 +211,11 @@ export default function CircuitCanvas({
 
   const WIRE_HEIGHT = 60;
   const WIRE_START_X = 120;
+
+  // Compute content width from rightmost gate
+  const maxElementX = elements.reduce((max, el) => Math.max(max, WIRE_START_X + el.position.x + 40), WIRE_START_X + 200);
+  const contentWidth = maxElementX + 60;
+  const contentHeight = wires.length * WIRE_HEIGHT + 40;
 
   return (
     <div className="bg-slate-900 rounded-xl p-4 h-full flex flex-col">
@@ -234,13 +256,44 @@ export default function CircuitCanvas({
         </div>
       )}
 
-      <div className="flex-1 overflow-auto bg-slate-950 rounded-lg p-4 min-h-[300px]">
+      <div ref={canvasRef} className="flex-1 overflow-auto bg-slate-950 rounded-lg p-4 min-h-[300px] relative">
+        {/* Zoom controls */}
+        <div className="absolute bottom-2 right-2 z-10 flex items-center gap-1 bg-slate-800/90 rounded px-2 py-1">
+          <button
+            onClick={() => setScale((s) => Math.max(0.2, s - 0.1))}
+            className="w-6 h-6 text-xs bg-slate-700 hover:bg-slate-600 rounded flex items-center justify-center"
+          >
+            -
+          </button>
+          <span className="text-[10px] text-slate-300 w-10 text-center font-mono">
+            {Math.round(scale * 100)}%
+          </span>
+          <button
+            onClick={() => setScale((s) => Math.min(2, s + 0.1))}
+            className="w-6 h-6 text-xs bg-slate-700 hover:bg-slate-600 rounded flex items-center justify-center"
+          >
+            +
+          </button>
+          {scale !== 1 && (
+            <button
+              onClick={() => setScale(1)}
+              className="ml-1 px-1.5 h-6 text-[10px] bg-slate-700 hover:bg-slate-600 rounded"
+            >
+              Reset
+            </button>
+          )}
+        </div>
+
         {wires.length === 0 ? (
           <div className="h-full flex items-center justify-center text-slate-500">
             <p>Add qubits or qumodes to start building your circuit</p>
           </div>
         ) : (
-          <svg className="w-full" style={{ minHeight: wires.length * WIRE_HEIGHT + 40 }}>
+          <svg
+            width={contentWidth * scale}
+            style={{ minHeight: contentHeight * scale }}
+          >
+            <g transform={`scale(${scale})`}>
             {/* First render all wires */}
             {wires.map((wire, index) => {
               const y = index * WIRE_HEIGHT + 30;
@@ -316,7 +369,7 @@ export default function CircuitCanvas({
                   <line
                     x1={WIRE_START_X}
                     y1={y}
-                    x2="100%"
+                    x2={contentWidth}
                     y2={y}
                     stroke={wireColor}
                     strokeWidth={isQubit ? 2 : 4}
@@ -328,7 +381,7 @@ export default function CircuitCanvas({
                     <rect
                       x={WIRE_START_X}
                       y={y - WIRE_HEIGHT / 2 + 5}
-                      width="calc(100% - 120px)"
+                      width={contentWidth - WIRE_START_X}
                       height={WIRE_HEIGHT - 10}
                       fill="rgba(168, 85, 247, 0.2)"
                       stroke="#a855f7"
@@ -342,7 +395,7 @@ export default function CircuitCanvas({
                   <rect
                     x={WIRE_START_X}
                     y={y - WIRE_HEIGHT / 2 + 5}
-                    width="calc(100% - 120px)"
+                    width={contentWidth - WIRE_START_X}
                     height={WIRE_HEIGHT - 10}
                     fill={dragOverWire === index ? 'rgba(255,255,255,0.1)' : 'transparent'}
                     onDragOver={(e) => handleDragOver(e, index)}
@@ -369,6 +422,8 @@ export default function CircuitCanvas({
                   ? '#3b82f6'
                   : gate.category === 'qumode'
                   ? '#10b981'
+                  : gate.category === 'custom'
+                  ? '#d97706'
                   : '#9333ea';
 
               // Check if this is a multi-wire gate
@@ -378,83 +433,157 @@ export default function CircuitCanvas({
                 const targetY = element.targetWireIndices![0] * WIRE_HEIGHT + 30;
                 const minY = Math.min(primaryY, targetY);
                 const maxY = Math.max(primaryY, targetY);
-                const gateHeight = maxY - minY + 40;
                 const hasParams = gate.parameters && gate.parameters.length > 0;
+                const isCustom = gate.category === 'custom';
+                const isClickable = hasParams || isCustom;
+                const isCNOT = gate.id === 'cnot';
+                const isHybrid = gate.category === 'hybrid';
 
                 return (
                   <g
                     key={element.id}
                     onMouseEnter={() => setHoveredElement(element.id)}
                     onMouseLeave={() => setHoveredElement(null)}
-                    className={hasParams ? 'cursor-pointer' : ''}
+                    className={isClickable ? 'cursor-pointer' : ''}
                   >
-                    {/* Vertical connection line */}
+                    {/* Vertical connection line between control and target */}
                     <line
                       x1={gateX}
-                      y1={minY}
+                      y1={primaryY}
                       x2={gateX}
-                      y2={maxY}
-                      stroke={gateColor}
-                      strokeWidth={3}
-                    />
-
-                    {/* Gate box spanning both wires */}
-                    <rect
-                      x={gateX - 25}
-                      y={minY - 20}
-                      width={50}
-                      height={gateHeight}
-                      fill={gateColor}
-                      rx={6}
-                      stroke={isHovered && hasParams ? '#fbbf24' : 'white'}
+                      y2={targetY}
+                      stroke={isCNOT || isHybrid ? 'white' : gateColor}
                       strokeWidth={2}
-                      onClick={() => hasParams && onElementClick(element)}
+                      className="pointer-events-none"
                     />
 
-                    {/* Gate symbol */}
-                    <text
-                      x={gateX}
-                      y={(minY + maxY) / 2 + 5}
-                      fill="white"
-                      fontSize={14}
-                      fontWeight="bold"
-                      textAnchor="middle"
-                      className="pointer-events-none"
-                    >
-                      {gate.symbol}
-                    </text>
+                    {isCNOT && (
+                      <>
+                        {/* Control qubit: filled dot */}
+                        <circle
+                          cx={gateX}
+                          cy={primaryY}
+                          r={8}
+                          fill="white"
+                          className="pointer-events-none"
+                        />
+                        {/* Target qubit: circle with cross (⊕ symbol) */}
+                        <circle
+                          cx={gateX}
+                          cy={targetY}
+                          r={14}
+                          fill="none"
+                          stroke="white"
+                          strokeWidth={2}
+                          className="pointer-events-none"
+                        />
+                        <line
+                          x1={gateX - 14}
+                          y1={targetY}
+                          x2={gateX + 14}
+                          y2={targetY}
+                          stroke="white"
+                          strokeWidth={2}
+                          className="pointer-events-none"
+                        />
+                        <line
+                          x1={gateX}
+                          y1={targetY - 14}
+                          x2={gateX}
+                          y2={targetY + 14}
+                          stroke="white"
+                          strokeWidth={2}
+                          className="pointer-events-none"
+                        />
+                      </>
+                    )}
+
+                    {isHybrid && (
+                      <>
+                        {/* Control dot on qubit wire */}
+                        <circle
+                          cx={gateX}
+                          cy={primaryY}
+                          r={8}
+                          fill="white"
+                          className="pointer-events-none"
+                        />
+                        {/* Gate box on qumode wire */}
+                        <rect
+                          x={gateX - 22}
+                          y={targetY - 16}
+                          width={44}
+                          height={32}
+                          fill={gateColor}
+                          rx={4}
+                          stroke={isHovered && isClickable ? '#fbbf24' : 'white'}
+                          strokeWidth={2}
+                          onClick={() => isClickable && onElementClick(element)}
+                        />
+                        <text
+                          x={gateX}
+                          y={targetY + 5}
+                          fill="white"
+                          fontSize={14}
+                          fontWeight="bold"
+                          textAnchor="middle"
+                          className="pointer-events-none"
+                        >
+                          {gate.symbol}
+                        </text>
+                      </>
+                    )}
+
+                    {/* Default rendering for other multi-wire gates (e.g. beam splitter) */}
+                    {!isCNOT && !isHybrid && (
+                      <>
+                        <rect
+                          x={gateX - 25}
+                          y={minY - 20}
+                          width={50}
+                          height={maxY - minY + 40}
+                          fill={gateColor}
+                          rx={6}
+                          stroke={isHovered && isClickable ? '#fbbf24' : 'white'}
+                          strokeWidth={2}
+                          onClick={() => isClickable && onElementClick(element)}
+                        />
+                        <text
+                          x={gateX}
+                          y={isCustom && element.generatorExpression ? (minY + maxY) / 2 : (minY + maxY) / 2 + 5}
+                          fill="white"
+                          fontSize={14}
+                          fontWeight="bold"
+                          textAnchor="middle"
+                          className="pointer-events-none"
+                        >
+                          {gate.symbol}
+                        </text>
+                        {isCustom && element.generatorExpression && (
+                          <text
+                            x={gateX}
+                            y={(minY + maxY) / 2 + 12}
+                            fill="white"
+                            fontSize={8}
+                            textAnchor="middle"
+                            className="pointer-events-none"
+                            opacity={0.8}
+                          >
+                            {element.generatorExpression.length > 8
+                              ? element.generatorExpression.slice(0, 7) + '…'
+                              : element.generatorExpression}
+                          </text>
+                        )}
+                      </>
+                    )}
 
                     {/* Parameter indicator */}
-                    {hasParams && (
+                    {(hasParams || isCustom) && (
                       <circle
-                        cx={gateX + 20}
-                        cy={minY - 15}
+                        cx={gateX + (isCNOT ? 20 : isHybrid ? 28 : 20)}
+                        cy={isCNOT ? Math.min(primaryY, targetY) - 5 : isHybrid ? targetY - 12 : minY - 15}
                         r={4}
                         fill="#fbbf24"
-                        className="pointer-events-none"
-                      />
-                    )}
-
-                    {/* Control dot on qubit (for hybrid gates) */}
-                    {gate.category === 'hybrid' && (
-                      <circle
-                        cx={gateX}
-                        cy={primaryY}
-                        r={6}
-                        fill="white"
-                        className="pointer-events-none"
-                      />
-                    )}
-
-                    {/* Target indicator on qumode (for hybrid gates) */}
-                    {gate.category === 'hybrid' && (
-                      <circle
-                        cx={gateX}
-                        cy={targetY}
-                        r={8}
-                        fill="none"
-                        stroke="white"
-                        strokeWidth={2}
                         className="pointer-events-none"
                       />
                     )}
@@ -468,9 +597,9 @@ export default function CircuitCanvas({
                         }}
                         className="cursor-pointer"
                       >
-                        <circle cx={gateX + 30} cy={minY - 10} r={10} fill="#dc2626" />
+                        <circle cx={gateX + 22} cy={minY - 10} r={10} fill="#dc2626" />
                         <text
-                          x={gateX + 30}
+                          x={gateX + 22}
                           y={minY - 6}
                           fill="white"
                           fontSize={14}
@@ -486,12 +615,15 @@ export default function CircuitCanvas({
 
               // Single-wire gate rendering
               const hasParams = gate.parameters && gate.parameters.length > 0;
+              const isCustom = gate.category === 'custom';
+              const isClickable = hasParams || isCustom;
+              const needsConfig = isCustom && !element.generatorExpression;
               return (
                 <g
                   key={element.id}
                   onMouseEnter={() => setHoveredElement(element.id)}
                   onMouseLeave={() => setHoveredElement(null)}
-                  className={hasParams ? 'cursor-pointer' : ''}
+                  className={isClickable ? 'cursor-pointer' : ''}
                 >
                   <rect
                     x={gateX - 20}
@@ -500,13 +632,14 @@ export default function CircuitCanvas({
                     height={40}
                     fill={gateColor}
                     rx={6}
-                    stroke={isHovered && hasParams ? '#fbbf24' : 'white'}
-                    strokeWidth={isHovered && hasParams ? 2 : 1}
-                    onClick={() => hasParams && onElementClick(element)}
+                    stroke={isHovered && isClickable ? '#fbbf24' : needsConfig ? '#ef4444' : 'white'}
+                    strokeWidth={isHovered && isClickable ? 2 : needsConfig ? 2 : 1}
+                    strokeDasharray={needsConfig ? '4,2' : 'none'}
+                    onClick={() => isClickable && onElementClick(element)}
                   />
                   <text
                     x={gateX}
-                    y={primaryY + 5}
+                    y={isCustom && element.generatorExpression ? primaryY : primaryY + 5}
                     fill="white"
                     fontSize={14}
                     fontWeight="bold"
@@ -515,14 +648,30 @@ export default function CircuitCanvas({
                   >
                     {gate.symbol}
                   </text>
+                  {/* Show generator expression for custom gates */}
+                  {isCustom && element.generatorExpression && (
+                    <text
+                      x={gateX}
+                      y={primaryY + 12}
+                      fill="white"
+                      fontSize={8}
+                      textAnchor="middle"
+                      className="pointer-events-none"
+                      opacity={0.8}
+                    >
+                      {element.generatorExpression.length > 8
+                        ? element.generatorExpression.slice(0, 7) + '…'
+                        : element.generatorExpression}
+                    </text>
+                  )}
 
-                  {/* Parameter indicator */}
-                  {hasParams && (
+                  {/* Parameter/config indicator */}
+                  {(hasParams || needsConfig) && (
                     <circle
                       cx={gateX + 15}
                       cy={primaryY - 15}
                       r={4}
-                      fill="#fbbf24"
+                      fill={needsConfig ? '#ef4444' : '#fbbf24'}
                       className="pointer-events-none"
                     />
                   )}
@@ -551,6 +700,7 @@ export default function CircuitCanvas({
                 </g>
               );
             })}
+            </g>
           </svg>
         )}
       </div>
