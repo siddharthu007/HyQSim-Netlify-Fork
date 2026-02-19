@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import type { Gate, Wire, CircuitElement, QubitInitialState, QumodeInitialState } from '../types/circuit';
+import { parseGeneratorExpression } from '../simulation/customGenerator';
 
 // Cycle through qubit initial states
 const QUBIT_STATES: QubitInitialState[] = ['0', '1', '+', '-', 'i', '-i'];
@@ -92,8 +93,14 @@ export default function CircuitCanvas({
     const x = (e.clientX - rect.left) / scale;
     const wire = wires[wireIndex];
 
-    // Handle hybrid gates - need to select both qubit and qumode
-    if (gate.category === 'hybrid') {
+    // Determine if this is a custom CV-DV gate (needs hybrid two-drop flow)
+    const isCustomCVDV = gate.id === 'custom_cvdv' || (
+      gate.category === 'custom' && (gate as Gate & { generatorExpression?: string }).generatorExpression &&
+      parseGeneratorExpression((gate as Gate & { generatorExpression?: string }).generatorExpression!).type === 'hybrid'
+    );
+
+    // Handle hybrid gates and custom CV-DV gates - need to select both qubit and qumode
+    if (gate.category === 'hybrid' || isCustomCVDV) {
       if (!pendingHybridGate) {
         // First drop - store the gate and wait for second wire selection
         setPendingHybridGate({ gate, firstWireIndex: wireIndex, position: { x } });
@@ -187,7 +194,15 @@ export default function CircuitCanvas({
       return;
     }
 
-    // Custom gates (category === 'custom') can be placed on any wire
+    // Custom CV gates can only be placed on qumode wires
+    const isCustomCV = gate.id === 'custom_cv' || (
+      gate.category === 'custom' && !isCustomCVDV && (gate as Gate & { generatorExpression?: string }).generatorExpression &&
+      parseGeneratorExpression((gate as Gate & { generatorExpression?: string }).generatorExpression!).type === 'cv'
+    );
+    if (isCustomCV && wire.type !== 'qumode') {
+      alert('Custom CV gates can only be placed on qumode wires');
+      return;
+    }
     onDropGate(gate, wireIndex, { x, y: 0 });
   };
 
@@ -242,7 +257,7 @@ export default function CircuitCanvas({
         <div className="mb-2 p-2 bg-purple-900/50 border border-purple-500 rounded-lg flex justify-between items-center">
           <span className="text-sm text-purple-200">
             Drop <strong>{pendingHybridGate.gate.name}</strong> on the second wire
-            ({pendingHybridGate.gate.category === 'hybrid'
+            ({pendingHybridGate.gate.category === 'hybrid' || pendingHybridGate.gate.id === 'custom_cvdv'
               ? (wires[pendingHybridGate.firstWireIndex]?.type === 'qubit' ? 'qumode' : 'qubit')
               : wires[pendingHybridGate.firstWireIndex]?.type
             })
@@ -437,7 +452,7 @@ export default function CircuitCanvas({
                 const isCustom = gate.category === 'custom';
                 const isClickable = hasParams || isCustom;
                 const isCNOT = gate.id === 'cnot';
-                const isHybrid = gate.category === 'hybrid';
+                const isHybrid = gate.category === 'hybrid' || gate.id === 'custom_cvdv';
 
                 return (
                   <g
@@ -459,6 +474,14 @@ export default function CircuitCanvas({
 
                     {isCNOT && (
                       <>
+                        {/* Invisible hit area for hover/delete */}
+                        <rect
+                          x={gateX - 16}
+                          y={minY - 16}
+                          width={32}
+                          height={maxY - minY + 32}
+                          fill="transparent"
+                        />
                         {/* Control qubit: filled dot */}
                         <circle
                           cx={gateX}
