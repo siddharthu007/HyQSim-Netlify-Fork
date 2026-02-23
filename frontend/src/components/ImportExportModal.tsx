@@ -1,8 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { Wire, CircuitElement } from '../types/circuit';
 import { parseBosonicQiskit, generateBosonicQiskit } from '../simulation/qiskitIO';
+import { parseHybridLane, generateHybridLane } from '../simulation/hybridlaneIO';
 
-interface QiskitIOModalProps {
+type CodeFormat = 'bosonic-qiskit' | 'hybridlane';
+
+interface ImportExportModalProps {
   mode: 'import' | 'export';
   wires: Wire[];
   elements: CircuitElement[];
@@ -11,15 +14,36 @@ interface QiskitIOModalProps {
   onClose: () => void;
 }
 
-export default function QiskitIOModal({
+const FORMAT_LABELS: Record<CodeFormat, string> = {
+  'bosonic-qiskit': 'Bosonic Qiskit (c2qa)',
+  'hybridlane': 'HybridLane (PennyLane)',
+};
+
+const IMPORT_DESCRIPTIONS: Record<CodeFormat, string> = {
+  'bosonic-qiskit': 'Paste bosonic qiskit (c2qa) code below. Register declarations are required, but import lines are optional.',
+  'hybridlane': 'Paste HybridLane gate calls (qml.* / hqml.*) below. Import lines, decorators, and boilerplate are optional. Loops and conditionals are not supported.',
+};
+
+const EXPORT_DESCRIPTIONS: Record<CodeFormat, string> = {
+  'bosonic-qiskit': 'Generated bosonic qiskit (c2qa) Python code for your circuit.',
+  'hybridlane': 'Generated HybridLane (PennyLane) Python code for your circuit.',
+};
+
+const IMPORT_PLACEHOLDERS: Record<CodeFormat, string> = {
+  'bosonic-qiskit': `qmr = c2qa.QumodeRegister(num_qumodes=1, num_qubits_per_qumode=4)\nqbr = qiskit.QuantumRegister(1)\ncircuit = c2qa.CVCircuit(qmr, qbr)\n\ncircuit.h(qbr[0])\ncircuit.cv_d(1.0, qmr[0])\ncircuit.cv_c_d(complex(1, 0.5), qmr[0], qbr[0])`,
+  'hybridlane': `qml.Hadamard(wires=0)\nhqml.Displacement(1.0, 0, wires="m0")\nhqml.ConditionalDisplacement(1.0, 0.5, wires=[0, "m0"])`,
+};
+
+export default function ImportExportModal({
   mode: initialMode,
   wires,
   elements,
   fockTruncation,
   onImport,
   onClose,
-}: QiskitIOModalProps) {
+}: ImportExportModalProps) {
   const [activeTab, setActiveTab] = useState<'import' | 'export'>(initialMode);
+  const [format, setFormat] = useState<CodeFormat>('bosonic-qiskit');
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -30,7 +54,9 @@ export default function QiskitIOModal({
   const handleExport = useCallback(() => {
     setError(null);
     try {
-      const result = generateBosonicQiskit(wires, elements, fockTruncation);
+      const result = format === 'bosonic-qiskit'
+        ? generateBosonicQiskit(wires, elements, fockTruncation)
+        : generateHybridLane(wires, elements, fockTruncation);
       if (result.success) {
         setExportedCode(result.code);
       } else {
@@ -39,25 +65,27 @@ export default function QiskitIOModal({
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Export failed');
     }
-  }, [wires, elements, fockTruncation]);
+  }, [wires, elements, fockTruncation, format]);
 
-  // Auto-export when switching to export tab
+  // Auto-export when switching to export tab or changing format
   useEffect(() => {
-    if (activeTab === 'export' && !exportedCode) {
+    if (activeTab === 'export') {
       handleExport();
     }
-  }, [activeTab, exportedCode, handleExport]);
+  }, [activeTab, format, handleExport]);
 
   const handleImport = () => {
     if (!code.trim()) {
-      setError('Please paste some bosonic qiskit code.');
+      setError(`Please paste some ${FORMAT_LABELS[format]} code.`);
       return;
     }
     setError(null);
     setWarnings([]);
     setImportResult(null);
     try {
-      const result = parseBosonicQiskit(code);
+      const result = format === 'bosonic-qiskit'
+        ? parseBosonicQiskit(code)
+        : parseHybridLane(code);
       if (result.success) {
         setImportResult({ wires: result.wires, elements: result.elements });
         setWarnings(result.warnings || []);
@@ -83,7 +111,6 @@ export default function QiskitIOModal({
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // Fallback: select the textarea
       const textarea = document.querySelector('#export-code') as HTMLTextAreaElement;
       if (textarea) {
         textarea.select();
@@ -95,9 +122,18 @@ export default function QiskitIOModal({
     setActiveTab(tab);
     setError(null);
     setWarnings([]);
+    setExportedCode(null);
     if (tab === 'import') {
       setImportResult(null);
     }
+  };
+
+  const handleFormatSwitch = (newFormat: CodeFormat) => {
+    setFormat(newFormat);
+    setError(null);
+    setWarnings([]);
+    setExportedCode(null);
+    setImportResult(null);
   };
 
   return (
@@ -138,12 +174,32 @@ export default function QiskitIOModal({
           </button>
         </div>
 
+        {/* Format selector */}
+        <div className="px-4 pt-3 pb-1 flex items-center gap-2">
+          <span className="text-xs text-slate-500">Format:</span>
+          <div className="flex bg-slate-900 rounded-lg p-0.5">
+            {(['bosonic-qiskit', 'hybridlane'] as CodeFormat[]).map((f) => (
+              <button
+                key={f}
+                onClick={() => handleFormatSwitch(f)}
+                className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                  format === f
+                    ? 'bg-slate-700 text-white'
+                    : 'text-slate-400 hover:text-slate-300'
+                }`}
+              >
+                {FORMAT_LABELS[f]}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/* Content */}
         <div className="flex-1 overflow-auto p-4">
           {activeTab === 'import' ? (
             <div className="flex flex-col gap-3">
               <p className="text-sm text-slate-400">
-                Paste bosonic qiskit (c2qa) Python code below. The circuit will be parsed and loaded into the editor.
+                {IMPORT_DESCRIPTIONS[format]}
               </p>
               <textarea
                 value={code}
@@ -152,7 +208,7 @@ export default function QiskitIOModal({
                   setError(null);
                   setImportResult(null);
                 }}
-                placeholder={`import c2qa\nimport qiskit\n\nqmr = c2qa.QumodeRegister(num_qumodes=1, num_qubits_per_qumode=4)\nqbr = qiskit.QuantumRegister(1)\ncircuit = c2qa.CVCircuit(qmr, qbr)\n\ncircuit.h(qbr[0])\ncircuit.cv_d(1.0, qmr[0])\ncircuit.cv_c_d(complex(1, 0.5), qmr[0], qbr[0])`}
+                placeholder={IMPORT_PLACEHOLDERS[format]}
                 className="w-full h-[300px] bg-slate-950 text-green-400 font-mono text-sm p-3 rounded-lg border border-slate-700 focus:border-blue-500 focus:outline-none resize-none"
                 spellCheck={false}
               />
@@ -204,7 +260,7 @@ export default function QiskitIOModal({
           ) : (
             <div className="flex flex-col gap-3">
               <p className="text-sm text-slate-400">
-                Generated bosonic qiskit (c2qa) Python code for your circuit.
+                {EXPORT_DESCRIPTIONS[format]}
               </p>
 
               {error && (

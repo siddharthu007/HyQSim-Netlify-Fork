@@ -133,7 +133,7 @@ function tokenizeExpr(s: string): ExprToken[] {
   return tokens;
 }
 
-interface ComplexVal { re: number; im: number; }
+export interface ComplexVal { re: number; im: number; }
 
 const KNOWN_CONSTANTS: Record<string, number> = {
   'np.pi': Math.PI, 'numpy.pi': Math.PI, 'math.pi': Math.PI, 'pi': Math.PI,
@@ -145,7 +145,7 @@ const KNOWN_FUNCTIONS = new Set([
   'np.sqrt', 'numpy.sqrt', 'math.sqrt',
 ]);
 
-function evalNumericExpr(exprStr: string): ComplexVal {
+export function evalNumericExpr(exprStr: string): ComplexVal {
   const tokens = tokenizeExpr(exprStr);
   let pos = 0;
 
@@ -315,7 +315,7 @@ function ioUid(prefix: string): string {
 }
 
 /** Split arguments on commas, respecting parentheses nesting. */
-function splitArgs(argsStr: string): string[] {
+export function splitArgs(argsStr: string): string[] {
   const args: string[] = [];
   let depth = 0;
   let current = '';
@@ -657,7 +657,7 @@ function round6(n: number): number {
 // Generator: HyQSim circuit -> bosonic qiskit code
 // ---------------------------------------------------------------------------
 
-function formatNumber(value: number): string {
+export function formatNumber(value: number): string {
   if (value === 0) return '0';
 
   const ratio = value / Math.PI;
