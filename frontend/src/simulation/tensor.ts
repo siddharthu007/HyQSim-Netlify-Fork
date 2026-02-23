@@ -597,3 +597,89 @@ export function applyPostSelection(
 
   return { ...state, amplitudes: normalize(newAmplitudes) };
 }
+
+// ---------------------------------------------------------------------------
+// Qubit bitstring measurement sampling
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute exact qubit bitstring probabilities by tracing out all qumodes.
+ * Returns a map from bitstring (e.g., "010") to probability.
+ *
+ * Since subsystems are ordered qubits first then qumodes, the state vector index is:
+ *   fullIndex = qubitCombo * qumodeTotalDim + qumodeCombo
+ */
+export function getQubitBitstringProbabilities(
+  state: TensorState
+): Map<string, number> {
+  const qubitSubs = state.subsystems.filter(s => s.type === 'qubit');
+  const numQubits = qubitSubs.length;
+
+  if (numQubits === 0) return new Map();
+
+  const numBitstrings = 1 << numQubits; // 2^numQubits
+  const probs = new Map<string, number>();
+
+  // Product of all qumode dimensions
+  let qumodeTotalDim = 1;
+  for (const s of state.subsystems) {
+    if (s.type === 'qumode') qumodeTotalDim *= s.dim;
+  }
+
+  for (let bitIdx = 0; bitIdx < numBitstrings; bitIdx++) {
+    let prob = 0;
+
+    // Sum |amplitude|² over all qumode basis states
+    for (let qmIdx = 0; qmIdx < qumodeTotalDim; qmIdx++) {
+      const fullIdx = bitIdx * qumodeTotalDim + qmIdx;
+      if (fullIdx < state.amplitudes.length) {
+        const amp = state.amplitudes[fullIdx];
+        prob += amp.re * amp.re + amp.im * amp.im;
+      }
+    }
+
+    if (prob > 1e-12) {
+      const label = bitIdx.toString(2).padStart(numQubits, '0');
+      probs.set(label, prob);
+    }
+  }
+
+  return probs;
+}
+
+/**
+ * Sample qubit bitstrings from the state vector.
+ * Returns a histogram of bitstring counts from `shots` measurements.
+ */
+export function sampleQubitBitstrings(
+  state: TensorState,
+  shots: number
+): Record<string, number> {
+  const probs = getQubitBitstringProbabilities(state);
+  if (probs.size === 0) return {};
+
+  // Build cumulative distribution for sampling
+  const entries = Array.from(probs.entries());
+  const cumulative: { label: string; cumProb: number }[] = [];
+  let cumProb = 0;
+  for (const [label, prob] of entries) {
+    cumProb += prob;
+    cumulative.push({ label, cumProb });
+  }
+
+  // Sample using binary search
+  const counts: Record<string, number> = {};
+  for (let i = 0; i < shots; i++) {
+    const r = Math.random();
+    let lo = 0, hi = cumulative.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (cumulative[mid].cumProb < r) lo = mid + 1;
+      else hi = mid;
+    }
+    const label = cumulative[lo].label;
+    counts[label] = (counts[label] ?? 0) + 1;
+  }
+
+  return counts;
+}

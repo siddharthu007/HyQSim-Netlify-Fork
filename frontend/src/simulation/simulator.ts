@@ -14,6 +14,7 @@ import {
   partialTraceToSubsystem,
   densityMatrixToQubitState,
   densityMatrixToQumodeState,
+  sampleQubitBitstrings,
 } from './tensor';
 
 // Sort elements by x position (left to right execution)
@@ -26,7 +27,8 @@ export function runSimulation(
   elements: CircuitElement[],
   gates: Map<string, Gate>,
   fockDim: number,
-  postSelections: QubitPostSelection[] = []
+  postSelections: QubitPostSelection[] = [],
+  shots: number = 1024
 ): SimulationResult {
   const startTime = performance.now();
 
@@ -151,6 +153,12 @@ export function runSimulation(
     });
   }
 
+  // Sample qubit bitstrings for measurement histogram
+  let bitstringCounts: Record<string, number> | undefined;
+  if (qubitWireIndices.length > 0) {
+    bitstringCounts = sampleQubitBitstrings(state, shots);
+  }
+
   const executionTime = performance.now() - startTime;
 
   return {
@@ -158,5 +166,6 @@ export function runSimulation(
     qumodeStates: qumodeResults,
     backend: 'browser',
     executionTime,
+    bitstringCounts,
   };
 }
