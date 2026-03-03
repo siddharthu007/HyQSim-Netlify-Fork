@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import type { Wire, SimulationResult, QubitPostSelection } from '../types/circuit';
 import QubitDisplay from './QubitDisplay';
 import QumodeDisplay from './QumodeDisplay';
@@ -17,6 +18,7 @@ interface DisplayPanelProps {
   onPostSelectionsChange: (selections: QubitPostSelection[]) => void;
   shots: number;
   onShotsChange: (value: number) => void;
+  measuredWireIndices: number[];
 }
 
 export default function DisplayPanel({
@@ -31,6 +33,7 @@ export default function DisplayPanel({
   onPostSelectionsChange,
   shots,
   onShotsChange,
+  measuredWireIndices,
 }: DisplayPanelProps) {
   const qubits = wires
     .map((w, idx) => ({ wire: w, wireIndex: idx }))
@@ -38,6 +41,19 @@ export default function DisplayPanel({
   const qumodes = wires
     .map((w, idx) => ({ wire: w, wireIndex: idx }))
     .filter(({ wire }) => wire.type === 'qumode');
+
+  // Labels for measured qubits in bitstring order (ascending qubit position)
+  const measuredQubitLabels = useMemo(() => {
+    const qubitWireIndices = wires
+      .map((w, i) => ({ wire: w, idx: i }))
+      .filter(({ wire }) => wire.type === 'qubit')
+      .map(({ idx }) => idx);
+
+    return measuredWireIndices
+      .filter(wi => wires[wi]?.type === 'qubit')
+      .sort((a, b) => qubitWireIndices.indexOf(a) - qubitWireIndices.indexOf(b))
+      .map(wi => `q${wires[wi].index}`);
+  }, [measuredWireIndices, wires]);
 
   // Helper to get post-selection for a qubit wire
   const getPostSelection = (wireIndex: number): 0 | 1 | 'none' => {
@@ -272,12 +288,23 @@ export default function DisplayPanel({
           )}
 
           {/* Bitstring measurement histogram */}
-          {simulationResult?.bitstringCounts && Object.keys(simulationResult.bitstringCounts).length > 0 && (
+          {simulationResult?.bitstringCounts && Object.keys(simulationResult.bitstringCounts).length > 0 ? (
             <div className="mt-4">
-              <h3 className="text-sm font-semibold text-amber-400 mb-2 border-b border-amber-500/30 pb-1">
+              <h3 className="text-sm font-semibold text-amber-400 mb-1 border-b border-amber-500/30 pb-1">
                 Measurement Counts
               </h3>
+              {measuredQubitLabels.length > 0 && (
+                <p className="text-[10px] text-slate-400 mb-2">
+                  Bits (left→right): {measuredQubitLabels.join(', ')}
+                </p>
+              )}
               <BitstringHistogram counts={simulationResult.bitstringCounts} totalShots={shots} />
+            </div>
+          ) : qubits.length > 0 && simulationResult && (
+            <div className="mt-4 p-3 bg-slate-700/50 rounded-lg text-center">
+              <p className="text-[11px] text-slate-400">
+                Drop a <span className="text-slate-200 font-medium">Measure</span> gate on qubits to see their histogram
+              </p>
             </div>
           )}
         </>

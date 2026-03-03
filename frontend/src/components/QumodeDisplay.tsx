@@ -1,7 +1,19 @@
-import { useState, useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { QumodeState } from '../types/circuit';
 
-type DisplayMode = 'wigner' | 'fock';
+type DisplayMode = 'fock' | 'wigner' | 'xdist' | 'pdist';
+
+const FOCK_DEFAULT = 15;
+const FOCK_MIN = 5;
+const FOCK_STEP = 5;
+const FOCK_HARD_MAX = 200;
+
+const RANGE_DEFAULT = 6;
+const RANGE_MIN = 2;
+const RANGE_MAX = 14;
+const RANGE_STEP = 2;
+
+const DIST_GRID = 200; // points for 1-D quadrature distributions
 
 interface QumodeDisplayProps {
   qumodeIndex: number;
@@ -17,227 +29,321 @@ export default function QumodeDisplay({
   state,
 }: QumodeDisplayProps) {
   const [mode, setMode] = useState<DisplayMode>('fock');
+  const [fockShow, setFockShow] = useState(FOCK_DEFAULT);
+  const [range, setRange] = useState(RANGE_DEFAULT);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  // Use provided state or default to vacuum
   const fockProbabilities = state?.fockProbabilities ?? createVacuumProbabilities(fockTruncation);
-  const fockAmplitudes = state?.fockAmplitudes ?? createVacuumAmplitudes(fockTruncation);
-  const meanPhotonNumber = state?.meanPhotonNumber ?? 0;
+  const fockAmplitudes    = state?.fockAmplitudes    ?? createVacuumAmplitudes(fockTruncation);
+  const meanPhotonNumber  = state?.meanPhotonNumber  ?? 0;
   const precomputedWigner = state?.wignerData;
-  const wignerRange = state?.wignerRange ?? 6;
-  const densityMatrix = state?.densityMatrix;
+  const backendRange      = state?.wignerRange ?? RANGE_DEFAULT;
+  const densityMatrix     = state?.densityMatrix;
 
-  // Generate Wigner function from state
+  // Quadrature expectations — always computed for the footer
+  const { xMean, pMean } = computeQuadratureExpectations(fockAmplitudes);
+
+  const maxFockShow       = Math.min(FOCK_HARD_MAX, fockTruncation);
+  const effectiveFockShow = Math.min(fockShow, maxFockShow);
+  const fockMaxProb       = Math.max(...fockProbabilities.slice(0, effectiveFockShow), 0.001);
+  const xLabelStep        = effectiveFockShow <= 20 ? 1 : effectiveFockShow <= 50 ? 5 : effectiveFockShow <= 100 ? 10 : 25;
+
+  // Render Wigner canvas whenever mode, state, or range changes
   useEffect(() => {
     if (mode !== 'wigner' || !canvasRef.current) return;
-
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Use pre-computed Wigner from Python backend if available, otherwise compute locally
     let wigner: number[][];
-    let range: number;
-
-    if (precomputedWigner && precomputedWigner.length > 0) {
-      // Use pre-computed Wigner from backend (computed from full density matrix)
+    if (precomputedWigner && precomputedWigner.length > 0 && range === backendRange) {
       wigner = precomputedWigner;
-      range = wignerRange;
     } else if (densityMatrix && densityMatrix.length > 0) {
-      // Compute from density matrix (handles mixed states correctly)
-      const size = 80;
-      range = 6;
-      wigner = computeWignerFromDensityMatrix(densityMatrix, size, range);
+      wigner = computeWignerFromDensityMatrix(densityMatrix, 80, range);
     } else {
-      // Fall back to local computation (only accurate for pure states)
-      const size = 80;
-      range = 6;
-      wigner = computeWignerFunction(fockAmplitudes, size, range);
+      wigner = computeWignerFunction(fockAmplitudes, 80, range);
     }
 
     const size = wigner.length;
-
-    // Find min/max for color scaling
     let minVal = Infinity, maxVal = -Infinity;
-    for (let i = 0; i < size; i++) {
-      for (let j = 0; j < size; j++) {
+    for (let i = 0; i < size; i++)
+      for (let j = 0; j < size; j++)
         if (isFinite(wigner[i][j])) {
           minVal = Math.min(minVal, wigner[i][j]);
           maxVal = Math.max(maxVal, wigner[i][j]);
         }
-      }
-    }
     const absMax = Math.max(Math.abs(minVal), Math.abs(maxVal), 0.01);
-
-    // Draw Wigner function
     const scaleX = canvas.width / size;
     const scaleY = canvas.height / size;
 
     for (let i = 0; i < size; i++) {
       for (let j = 0; j < size; j++) {
-        const value = wigner[i][j] / absMax; // Normalize to [-1, 1]
-
+        const v = wigner[i][j] / absMax;
         let r, g, b;
-        if (value >= 0) {
-          // Positive: blue
-          const intensity = Math.min(1, value);
-          r = Math.floor(255 * (1 - intensity * 0.8));
-          g = Math.floor(255 * (1 - intensity * 0.8));
-          b = 255;
+        if (v >= 0) {
+          const t = Math.min(1, v);
+          r = g = Math.floor(255 * (1 - t * 0.8)); b = 255;
         } else {
-          // Negative: red
-          const intensity = Math.min(1, -value);
-          r = 255;
-          g = Math.floor(255 * (1 - intensity * 0.8));
-          b = Math.floor(255 * (1 - intensity * 0.8));
+          const t = Math.min(1, -v);
+          r = 255; g = b = Math.floor(255 * (1 - t * 0.8));
         }
-
         ctx.fillStyle = `rgb(${r},${g},${b})`;
-        // Note: j is the row (y/p axis), i is the column (x axis)
         ctx.fillRect(i * scaleX, (size - 1 - j) * scaleY, scaleX + 1, scaleY + 1);
       }
     }
-
-    // Draw axes (x=0 and p=0 lines)
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
     ctx.lineWidth = 0.5;
     ctx.beginPath();
-    // Vertical axis (x=0)
-    ctx.moveTo(canvas.width / 2, 0);
-    ctx.lineTo(canvas.width / 2, canvas.height);
-    // Horizontal axis (p=0)
-    ctx.moveTo(0, canvas.height / 2);
-    ctx.lineTo(canvas.width, canvas.height / 2);
+    ctx.moveTo(canvas.width / 2, 0); ctx.lineTo(canvas.width / 2, canvas.height);
+    ctx.moveTo(0, canvas.height / 2); ctx.lineTo(canvas.width, canvas.height / 2);
     ctx.stroke();
-  }, [mode, fockAmplitudes, fockTruncation, precomputedWigner, wignerRange, densityMatrix]);
+  }, [mode, fockAmplitudes, precomputedWigner, densityMatrix, range, backendRange]);
 
-  // Find max probability for scaling
-  const maxProb = Math.max(...fockProbabilities.slice(0, fockTruncation), 0.001);
+  // Range zoom controls (shared by Wigner, x-dist, p-dist)
+  const zoomControls = (
+    <div className="flex items-center justify-center gap-2 mt-2">
+      <button
+        onClick={() => setRange(r => Math.max(RANGE_MIN, r - RANGE_STEP))}
+        disabled={range <= RANGE_MIN}
+        className="px-1.5 py-0.5 text-[10px] bg-slate-700 hover:bg-slate-600 disabled:opacity-30 rounded text-slate-300"
+      >zoom in</button>
+      <span className="text-[9px] text-slate-500">±{range}</span>
+      <button
+        onClick={() => setRange(r => Math.min(RANGE_MAX, r + RANGE_STEP))}
+        disabled={range >= RANGE_MAX}
+        className="px-1.5 py-0.5 text-[10px] bg-slate-700 hover:bg-slate-600 disabled:opacity-30 rounded text-slate-300"
+      >zoom out</button>
+    </div>
+  );
 
   return (
     <div className="bg-slate-800 rounded-lg p-3">
+      {/* Header */}
       <div className="flex justify-between items-center mb-2">
         <h4 className="text-sm font-semibold text-emerald-400">
           |m{qumodeIndex}⟩ <span className="text-xs text-slate-500">(wire {wireIndex})</span>
         </h4>
         <div className="flex gap-1">
-          <button
-            onClick={() => setMode('fock')}
-            className={`px-2 py-0.5 text-xs rounded transition-colors ${
-              mode === 'fock'
-                ? 'bg-emerald-600 text-white'
-                : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-            }`}
-          >
-            Fock
-          </button>
-          <button
-            onClick={() => setMode('wigner')}
-            className={`px-2 py-0.5 text-xs rounded transition-colors ${
-              mode === 'wigner'
-                ? 'bg-emerald-600 text-white'
-                : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-            }`}
-          >
-            Wigner
-          </button>
+          {(['fock', 'wigner', 'xdist', 'pdist'] as DisplayMode[]).map(m => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${
+                mode === m ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+              }`}
+            >
+              {m === 'fock' ? 'Fock' : m === 'wigner' ? 'Wigner' : m === 'xdist' ? 'x̂' : 'p̂'}
+            </button>
+          ))}
         </div>
       </div>
 
       <div className="text-xs text-slate-400 mb-2 flex justify-between">
-        <span>Fock truncation: {fockTruncation}</span>
-        <span className="font-mono">⟨n⟩ = {meanPhotonNumber.toFixed(2)}</span>
+        <span>Fock trunc: {fockTruncation}</span>
+        <span className="font-mono">⟨n̂⟩ = {meanPhotonNumber.toFixed(2)}</span>
       </div>
 
-      {mode === 'fock' ? (
+      {/* ── Fock mode ── */}
+      {mode === 'fock' && (
         <div className="bg-slate-900 rounded p-2">
           {/* Top 3 Fock states */}
           <div className="text-[9px] text-slate-400 mb-2 font-mono">
             {(() => {
               const indexed = fockProbabilities.slice(0, fockTruncation).map((p, i) => ({ n: i, p }));
-              const top3 = [...indexed].sort((a, b) => b.p - a.p).slice(0, 3);
-              return top3.map(({ n, p }) => (
-                <span key={n} className="mr-2">
-                  |{n}⟩: {(p * 100).toFixed(1)}%
-                </span>
+              return [...indexed].sort((a, b) => b.p - a.p).slice(0, 3).map(({ n, p }) => (
+                <span key={n} className="mr-2">|{n}⟩: {(p * 100).toFixed(1)}%</span>
               ));
             })()}
           </div>
-
-          {/* Bar chart container */}
           <div className="h-24 flex border-b border-l border-slate-600 relative ml-6">
-            {/* Y-axis ticks */}
             <div className="absolute -left-6 top-0 h-full flex flex-col justify-between text-[8px] text-slate-500 w-5 text-right pr-1">
-              <span>{(maxProb * 100).toFixed(0)}%</span>
+              <span>{(fockMaxProb * 100).toFixed(0)}%</span>
               <span>0</span>
             </div>
-
-            {/* Bars */}
-            {fockProbabilities.slice(0, Math.min(fockTruncation, 12)).map((prob, n) => {
-              const heightPercent = maxProb > 0 ? (prob / maxProb) * 100 : 0;
-              return (
+            {fockProbabilities.slice(0, effectiveFockShow).map((prob, n) => (
+              <div
+                key={n}
+                className="flex-1 flex flex-col justify-end h-full min-w-0"
+                title={`|${n}⟩: ${(prob * 100).toFixed(2)}%`}
+              >
                 <div
-                  key={n}
-                  className="flex-1 flex flex-col justify-end h-full"
-                  title={`|${n}⟩: ${(prob * 100).toFixed(2)}%`}
-                >
-                  <div
-                    className="w-full rounded-t-sm mx-px"
-                    style={{
-                      height: `${Math.max(heightPercent, prob > 0.001 ? 1 : 0)}%`,
-                      backgroundColor: prob > 0.01 ? '#10b981' : prob > 0.001 ? '#10b98180' : '#10b98130',
-                    }}
-                  />
-                </div>
-              );
-            })}
-          </div>
-
-          {/* X-axis labels */}
-          <div className="flex ml-6 mt-1">
-            {fockProbabilities.slice(0, Math.min(fockTruncation, 12)).map((_, n) => (
-              <div key={n} className="flex-1 text-center text-[8px] text-slate-500">
-                {n}
+                  className="w-full rounded-t-sm"
+                  style={{
+                    height: `${Math.max(fockMaxProb > 0 ? (prob / fockMaxProb) * 100 : 0, prob > 0.001 ? 1 : 0)}%`,
+                    backgroundColor: prob > 0.01 ? '#10b981' : prob > 0.001 ? '#10b98180' : '#10b98130',
+                  }}
+                />
               </div>
             ))}
           </div>
-          <div className="text-[9px] text-slate-500 text-center mt-1">n (photon number)</div>
-        </div>
-      ) : (
-        <div className="relative bg-slate-900 rounded p-2">
-          <canvas
-            ref={canvasRef}
-            width={180}
-            height={180}
-            className="mx-auto rounded block"
-          />
-          {/* Axis labels */}
-          <div className="flex justify-between text-[9px] text-slate-400 mt-1 px-1">
-            <span>-{wignerRange}</span>
-            <span>x (position)</span>
-            <span>+{wignerRange}</span>
+          <div className="flex ml-6 mt-1">
+            {fockProbabilities.slice(0, effectiveFockShow).map((_, n) => (
+              <div key={n} className="flex-1 text-center text-[8px] text-slate-500 min-w-0 overflow-hidden">
+                {n % xLabelStep === 0 ? n : ''}
+              </div>
+            ))}
           </div>
-          <div className="absolute left-1 top-2 h-[180px] flex flex-col justify-between text-[9px] text-slate-400">
-            <span>+{wignerRange}</span>
-            <span className="writing-mode-vertical text-[8px]">p</span>
-            <span>-{wignerRange}</span>
-          </div>
-          {/* Color legend */}
-          <div className="flex justify-center gap-3 mt-2 text-[9px]">
-            <span className="flex items-center gap-1">
-              <span className="w-3 h-3 bg-blue-500 rounded-sm"></span>
-              <span className="text-slate-400">W &gt; 0</span>
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="w-3 h-3 bg-red-500 rounded-sm"></span>
-              <span className="text-slate-400">W &lt; 0</span>
-            </span>
+          <div className="text-[9px] text-slate-500 text-center mt-0.5">n (photon number)</div>
+          <div className="flex items-center justify-center gap-2 mt-2">
+            <button
+              onClick={() => setFockShow(s => Math.max(FOCK_MIN, s - FOCK_STEP))}
+              disabled={effectiveFockShow <= FOCK_MIN}
+              className="px-1.5 py-0.5 text-[10px] bg-slate-700 hover:bg-slate-600 disabled:opacity-30 rounded text-slate-300"
+            >−5</button>
+            <span className="text-[9px] text-slate-500">showing {effectiveFockShow} levels</span>
+            <button
+              onClick={() => setFockShow(s => Math.min(maxFockShow, s + FOCK_STEP))}
+              disabled={effectiveFockShow >= maxFockShow}
+              className="px-1.5 py-0.5 text-[10px] bg-slate-700 hover:bg-slate-600 disabled:opacity-30 rounded text-slate-300"
+            >+5</button>
           </div>
         </div>
       )}
+
+      {/* ── Wigner mode ── */}
+      {mode === 'wigner' && (
+        <div className="relative bg-slate-900 rounded p-2">
+          <canvas ref={canvasRef} width={180} height={180} className="mx-auto rounded block" />
+          <div className="flex justify-between text-[9px] text-slate-400 mt-1 px-1">
+            <span>−{range}</span><span>x</span><span>+{range}</span>
+          </div>
+          <div className="absolute left-1 top-2 h-[180px] flex flex-col justify-between text-[9px] text-slate-400">
+            <span>+{range}</span><span className="text-[8px]">p</span><span>−{range}</span>
+          </div>
+          <div className="flex justify-center gap-3 mt-1 text-[9px]">
+            <span className="flex items-center gap-1">
+              <span className="w-3 h-3 bg-blue-500 rounded-sm inline-block" />
+              <span className="text-slate-400">W &gt; 0</span>
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-3 h-3 bg-red-500 rounded-sm inline-block" />
+              <span className="text-slate-400">W &lt; 0</span>
+            </span>
+          </div>
+          {zoomControls}
+        </div>
+      )}
+
+      {/* ── x̂ distribution mode ── */}
+      {mode === 'xdist' && (() => {
+        const dist = computePositionDistribution(fockAmplitudes, DIST_GRID, range);
+        return (
+          <div className="bg-slate-900 rounded p-2">
+            <div className="text-[9px] text-slate-400 mb-1 text-center">
+              P(x) — position quadrature marginal
+            </div>
+            <QuadraturePlotSVG
+              data={dist}
+              meanVal={xMean}
+              meanLabel="x̂"
+              axisLabel="x"
+              range={range}
+              color="#06b6d4"
+            />
+            {zoomControls}
+          </div>
+        );
+      })()}
+
+      {/* ── p̂ distribution mode ── */}
+      {mode === 'pdist' && (() => {
+        const dist = computeMomentumDistribution(fockAmplitudes, DIST_GRID, range);
+        return (
+          <div className="bg-slate-900 rounded p-2">
+            <div className="text-[9px] text-slate-400 mb-1 text-center">
+              P(p) — momentum quadrature marginal
+            </div>
+            <QuadraturePlotSVG
+              data={dist}
+              meanVal={pMean}
+              meanLabel="p̂"
+              axisLabel="p"
+              range={range}
+              color="#a78bfa"
+            />
+            {zoomControls}
+          </div>
+        );
+      })()}
+
+      {/* ── Always-visible quadrature expectation footer ── */}
+      <div className="mt-2 pt-2 border-t border-slate-700 flex justify-around text-[10px] font-mono">
+        <span>
+          <span className="text-cyan-400">⟨x̂⟩</span>
+          <span className="text-slate-300"> = {xMean.toFixed(3)}</span>
+        </span>
+        <span>
+          <span className="text-violet-400">⟨p̂⟩</span>
+          <span className="text-slate-300"> = {pMean.toFixed(3)}</span>
+        </span>
+      </div>
     </div>
   );
 }
+
+// ── SVG 1-D quadrature distribution plot ─────────────────────────────────────
+
+interface QuadraturePlotSVGProps {
+  data: { q: number; prob: number }[];
+  meanVal: number;
+  meanLabel: string;
+  axisLabel: string;
+  range: number;
+  color: string;
+}
+
+function QuadraturePlotSVG({ data, meanVal, meanLabel, axisLabel, range, color }: QuadraturePlotSVGProps) {
+  const W = 188, H = 80;
+  const ML = 6, MR = 6, MT = 16, MB = 18;
+  const PW = W - ML - MR, PH = H - MT - MB;
+
+  const maxProb = Math.max(...data.map(d => d.prob), 1e-6);
+
+  const toX = (q: number) => ML + ((q + range) / (2 * range)) * PW;
+  const toY = (p: number) => MT + PH - (p / maxProb) * PH;
+
+  const curvePts = data.map(d => `${toX(d.q).toFixed(1)},${toY(d.prob).toFixed(1)}`).join(' ');
+  const areaBase = MT + PH;
+  const areaPts = [
+    `${toX(data[0].q).toFixed(1)},${areaBase}`,
+    ...data.map(d => `${toX(d.q).toFixed(1)},${toY(d.prob).toFixed(1)}`),
+    `${toX(data[data.length - 1].q).toFixed(1)},${areaBase}`,
+  ].join(' ');
+
+  const mx = toX(meanVal);
+  const meanInRange = meanVal >= -range && meanVal <= range;
+
+  return (
+    <svg width={W} height={H} className="block mx-auto">
+      {/* Filled area */}
+      <polygon points={areaPts} fill={color} fillOpacity={0.15} />
+      {/* Curve */}
+      <polyline points={curvePts} fill="none" stroke={color} strokeWidth={1.5} />
+      {/* Mean line */}
+      {meanInRange && (
+        <>
+          <line
+            x1={mx} y1={MT} x2={mx} y2={MT + PH}
+            stroke="#fbbf24" strokeWidth={1} strokeDasharray="3,2"
+          />
+          <text x={mx} y={MT - 3} fill="#fbbf24" fontSize={8} textAnchor="middle">
+            ⟨{meanLabel}⟩={meanVal.toFixed(2)}
+          </text>
+        </>
+      )}
+      {/* X axis */}
+      <line x1={ML} y1={MT + PH} x2={ML + PW} y2={MT + PH} stroke="#475569" strokeWidth={1} />
+      {/* X tick labels */}
+      <text x={ML}          y={H - 4} fill="#64748b" fontSize={8} textAnchor="middle">−{range}</text>
+      <text x={ML + PW / 2} y={H - 4} fill="#64748b" fontSize={8} textAnchor="middle">0</text>
+      <text x={ML + PW}     y={H - 4} fill="#64748b" fontSize={8} textAnchor="middle">+{range}</text>
+      {/* Axis label */}
+      <text x={ML + PW / 2} y={H - 4 + 8} fill="#475569" fontSize={7} textAnchor="middle">{axisLabel}</text>
+    </svg>
+  );
+}
+
+// ── Helper functions ──────────────────────────────────────────────────────────
 
 function createVacuumProbabilities(fockDim: number): number[] {
   const probs = new Array(fockDim).fill(0);
@@ -246,223 +352,230 @@ function createVacuumProbabilities(fockDim: number): number[] {
 }
 
 function createVacuumAmplitudes(fockDim: number): { re: number; im: number }[] {
-  const amps: { re: number; im: number }[] = [];
-  for (let n = 0; n < fockDim; n++) {
-    amps.push({ re: n === 0 ? 1 : 0, im: 0 });
-  }
-  return amps;
+  return Array.from({ length: fockDim }, (_, n) => ({ re: n === 0 ? 1 : 0, im: 0 }));
 }
 
-// Compute Wigner function W(x, p) from Fock state amplitudes
-// Using the characteristic function approach for better numerical stability
+/**
+ * g=2 convention: x̂ = a+a†, p̂ = i(a†−a)
+ * ⟨x̂⟩ = 2·Re(A),  ⟨p̂⟩ = 2·Im(A)
+ * where A = Σ_{n=1}^{N-1} c_{n-1}* · c_n · √n
+ */
+function computeQuadratureExpectations(amplitudes: { re: number; im: number }[]): { xMean: number; pMean: number } {
+  let reA = 0, imA = 0;
+  for (let n = 1; n < amplitudes.length; n++) {
+    const sqrtN = Math.sqrt(n);
+    reA += (amplitudes[n - 1].re * amplitudes[n].re + amplitudes[n - 1].im * amplitudes[n].im) * sqrtN;
+    imA += (amplitudes[n - 1].re * amplitudes[n].im - amplitudes[n - 1].im * amplitudes[n].re) * sqrtN;
+  }
+  return { xMean: 2 * reA, pMean: 2 * imA };
+}
+
+/**
+ * Harmonic-oscillator basis functions at point x using the g=2 normalised recurrence:
+ *   ψ_0(x)   = (2π)^{−1/4} · exp(−x²/4)
+ *   ψ_1(x)   = x · ψ_0(x)
+ *   ψ_n(x)   = (x/√n) · ψ_{n−1} − √((n−1)/n) · ψ_{n−2}
+ * Valid for x̂ = a+a† convention (g=2, vacuum variance = 1).
+ */
+function computeHOBasis(x: number, fockDim: number): number[] {
+  const basis = new Array(fockDim).fill(0);
+  basis[0] = Math.pow(2 * Math.PI, -0.25) * Math.exp(-x * x / 4);
+  if (fockDim > 1) basis[1] = x * basis[0];
+  for (let n = 2; n < fockDim; n++) {
+    basis[n] = Math.sqrt(1 / n) * x * basis[n - 1] - Math.sqrt((n - 1) / n) * basis[n - 2];
+  }
+  return basis;
+}
+
+/** P(x) = |⟨x|ψ⟩|² using position-space HO wavefunctions */
+function computePositionDistribution(
+  amplitudes: { re: number; im: number }[],
+  gridSize: number,
+  range: number,
+): { q: number; prob: number }[] {
+  const result: { q: number; prob: number }[] = [];
+  const fockDim = amplitudes.length;
+  for (let i = 0; i < gridSize; i++) {
+    const q = ((i + 0.5) / gridSize - 0.5) * 2 * range;
+    const basis = computeHOBasis(q, fockDim);
+    let re = 0, im = 0;
+    for (let n = 0; n < fockDim; n++) {
+      re += amplitudes[n].re * basis[n];
+      im += amplitudes[n].im * basis[n];
+    }
+    result.push({ q, prob: re * re + im * im });
+  }
+  return result;
+}
+
+/**
+ * P(p) = |⟨p|ψ⟩|² using φ_n(p) = (−i)^n ψ_n(p).
+ * Rotate each amplitude: c_n → c_n · (−i)^n, then evaluate using HO basis at p.
+ */
+function computeMomentumDistribution(
+  amplitudes: { re: number; im: number }[],
+  gridSize: number,
+  range: number,
+): { q: number; prob: number }[] {
+  const result: { q: number; prob: number }[] = [];
+  const fockDim = amplitudes.length;
+
+  // Pre-rotate amplitudes by (−i)^n: cycle (1, −i, −1, +i)
+  const rotated = amplitudes.map(({ re, im }, n) => {
+    switch (n % 4) {
+      case 0: return { re,  im };        // × 1
+      case 1: return { re: im,  im: -re }; // × (−i)
+      case 2: return { re: -re, im: -im }; // × (−1)
+      case 3: return { re: -im, im: re };  // × (+i)
+      default: return { re, im };
+    }
+  });
+
+  for (let i = 0; i < gridSize; i++) {
+    const p = ((i + 0.5) / gridSize - 0.5) * 2 * range;
+    const basis = computeHOBasis(p, fockDim);
+    let re = 0, im = 0;
+    for (let n = 0; n < fockDim; n++) {
+      re += rotated[n].re * basis[n];
+      im += rotated[n].im * basis[n];
+    }
+    result.push({ q: p, prob: re * re + im * im });
+  }
+  return result;
+}
+
+// ── Wigner function computation ───────────────────────────────────────────────
+//
+// g=2 convention: x̂ = a+a†, p̂ = i(a†−a), vacuum variance = 1 in each quadrature.
+// Coordinates (X,P) in the Wigner function are eigenvalues of x̂_g2 and p̂_g2.
+//
+// Correct formula:  W_n(X,P) = (1/2π)(−1)^n L_n(R²) exp(−R²/2)   where R²=X²+P²
+// Off-diagonal:     W_{mn}   = (1/2π)(−1)^m √(m!/n!) (X−iP)^{n-m} L_m^{n-m}(R²) exp(−R²/2)
+//
+// Vacuum check: W_0 = (1/2π)exp(−R²/2), ⟨x̂²⟩ = ∫ X² W_0 dX dP = 1  ✓
+
 function computeWignerFunction(
   amplitudes: { re: number; im: number }[],
   gridSize: number,
-  range: number
+  range: number,
 ): number[][] {
   const wigner: number[][] = [];
   const fockDim = amplitudes.length;
-
-  // Precompute factorials (with safeguard for numerical stability)
   const factorials: number[] = [1];
-  for (let i = 1; i < fockDim; i++) {
-    factorials[i] = factorials[i - 1] * i;
-  }
+  for (let i = 1; i < fockDim; i++) factorials[i] = factorials[i - 1] * i;
 
   for (let ix = 0; ix < gridSize; ix++) {
     wigner[ix] = [];
-    // x goes from -range to +range
     const x = ((ix + 0.5) / gridSize - 0.5) * 2 * range;
-
     for (let ip = 0; ip < gridSize; ip++) {
-      // p goes from -range to +range
-      const p = ((ip + 0.5) / gridSize - 0.5) * 2 * range;
-
+      const p  = ((ip + 0.5) / gridSize - 0.5) * 2 * range;
       const r2 = x * x + p * p;
-      const expFactor = Math.exp(-2 * r2);
-      const prefactor = (2 / Math.PI) * expFactor;
-
+      const pf = (1 / (2 * Math.PI)) * Math.exp(-r2 / 2);  // g=2 convention
       let W = 0;
-
-      // Diagonal terms: W_{nn} = (2/π) * (-1)^n * exp(-2r²) * L_n(4r²) * |c_n|²
+      // Diagonal
       for (let n = 0; n < fockDim; n++) {
-        const prob = amplitudes[n].re * amplitudes[n].re + amplitudes[n].im * amplitudes[n].im;
-        const Ln = laguerre(n, 4 * r2);
-        const sign = (n % 2 === 0) ? 1 : -1;
-        W += prefactor * sign * Ln * prob;
+        const prob = amplitudes[n].re ** 2 + amplitudes[n].im ** 2;
+        W += pf * ((n % 2 === 0) ? 1 : -1) * laguerre(n, r2) * prob;
       }
-
-      // Off-diagonal terms: only sum m < n and double (since ρ_{mn} W_{mn} + ρ_{nm} W_{nm} = 2 Re(ρ_{mn} W_{mn}))
+      // Off-diagonal: power = (X − iP)^k  (no √2 factor in g=2)
       for (let n = 0; n < fockDim; n++) {
         for (let m = 0; m < n; m++) {
-          // ρ_{mn} = c_m * c_n*
           const rhoRe = amplitudes[m].re * amplitudes[n].re + amplitudes[m].im * amplitudes[n].im;
           const rhoIm = amplitudes[m].im * amplitudes[n].re - amplitudes[m].re * amplitudes[n].im;
-
-          // Skip if density matrix element is negligible
           if (Math.abs(rhoRe) < 1e-15 && Math.abs(rhoIm) < 1e-15) continue;
-
-          const k = n - m;
-          const sqrtFactor = Math.sqrt(factorials[m] / factorials[n]);
-          const Lmk = associatedLaguerre(m, k, 4 * r2);
+          const k    = n - m;
+          const sf   = Math.sqrt(factorials[m] / factorials[n]);
+          const Lmk  = associatedLaguerre(m, k, r2);
           const sign = (m % 2 === 0) ? 1 : -1;
-
-          // Compute (2(x - ip))^k for W_{mn} where m < n
-          // Using the formula: W_{mn} = (2/π) * (-1)^m * exp(-2r²) * sqrt(m!/n!) * (2(x-ip))^(n-m) * L_m^(n-m)(4r²)
           let powRe = 1, powIm = 0;
           for (let i = 0; i < k; i++) {
-            const newRe = powRe * 2 * x + powIm * 2 * p;  // (x - ip) means -ip contributes +p to real when multiplied by i
-            const newIm = powIm * 2 * x - powRe * 2 * p;  // -ip contribution
-            powRe = newRe;
-            powIm = newIm;
+            [powRe, powIm] = [
+              powRe * x + powIm * p,
+              powIm * x - powRe * p,
+            ];
           }
-
-          const Wmn_re = prefactor * sign * sqrtFactor * Lmk * powRe;
-          const Wmn_im = prefactor * sign * sqrtFactor * Lmk * powIm;
-
-          // Contribution: 2 * Re(ρ_{mn} * W_{mn})
-          W += 2 * (rhoRe * Wmn_re - rhoIm * Wmn_im);
+          W += 2 * (rhoRe * pf * sign * sf * Lmk * powRe - rhoIm * pf * sign * sf * Lmk * powIm);
         }
       }
-
       wigner[ix][ip] = W;
     }
   }
-
   return wigner;
 }
 
-// Laguerre polynomial L_n(x)
-function laguerre(n: number, x: number): number {
-  if (n === 0) return 1;
-  if (n === 1) return 1 - x;
-
-  let L0 = 1;
-  let L1 = 1 - x;
-
-  for (let k = 2; k <= n; k++) {
-    const L2 = ((2 * k - 1 - x) * L1 - (k - 1) * L0) / k;
-    L0 = L1;
-    L1 = L2;
-  }
-
-  return L1;
-}
-
-// Associated Laguerre polynomial L_n^{(k)}(x)
-function associatedLaguerre(n: number, k: number, x: number): number {
-  if (n === 0) return 1;
-  if (n === 1) return 1 + k - x;
-
-  let L0 = 1;
-  let L1 = 1 + k - x;
-
-  for (let m = 2; m <= n; m++) {
-    const L2 = ((2 * m - 1 + k - x) * L1 - (m - 1 + k) * L0) / m;
-    L0 = L1;
-    L1 = L2;
-  }
-
-  return L1;
-}
-
-// Compute Wigner function from full density matrix (handles mixed states)
 function computeWignerFromDensityMatrix(
   rho: { re: number; im: number }[][],
   gridSize: number,
-  range: number
+  range: number,
 ): number[][] {
   const wigner: number[][] = [];
   const fockDim = rho.length;
-
-  // Precompute factorials
   const factorials: number[] = [1];
-  for (let i = 1; i < fockDim; i++) {
-    factorials[i] = factorials[i - 1] * i;
-  }
+  for (let i = 1; i < fockDim; i++) factorials[i] = factorials[i - 1] * i;
 
   for (let ix = 0; ix < gridSize; ix++) {
     wigner[ix] = [];
     const x = ((ix + 0.5) / gridSize - 0.5) * 2 * range;
-
     for (let ip = 0; ip < gridSize; ip++) {
-      const p = ((ip + 0.5) / gridSize - 0.5) * 2 * range;
-
+      const p  = ((ip + 0.5) / gridSize - 0.5) * 2 * range;
       const r2 = x * x + p * p;
-      const expFactor = Math.exp(-2 * r2);
-      const prefactor = (2 / Math.PI) * expFactor;
-
+      const pf = (1 / (2 * Math.PI)) * Math.exp(-r2 / 2);  // g=2 convention
       let W = 0;
-
-      // Sum over all density matrix elements
       for (let m = 0; m < fockDim; m++) {
         for (let n = 0; n < fockDim; n++) {
-          const rhoMN_re = rho[m][n].re;
-          const rhoMN_im = rho[m][n].im;
-
-          // Skip negligible elements
-          if (Math.abs(rhoMN_re) < 1e-15 && Math.abs(rhoMN_im) < 1e-15) continue;
-
-          // W_{mn}(x,p) formula using associated Laguerre polynomials
-          let WmnContrib: number;
-
+          const rRe = rho[m][n].re, rIm = rho[m][n].im;
+          if (Math.abs(rRe) < 1e-15 && Math.abs(rIm) < 1e-15) continue;
           if (m === n) {
-            // Diagonal: W_{nn} = (2/π) * (-1)^n * exp(-2r²) * L_n(4r²)
-            const Ln = laguerre(n, 4 * r2);
-            const sign = (n % 2 === 0) ? 1 : -1;
-            WmnContrib = prefactor * sign * Ln * rhoMN_re;
+            W += pf * ((n % 2 === 0) ? 1 : -1) * laguerre(n, r2) * rRe;
           } else if (m < n) {
-            // Off-diagonal m < n
-            const k = n - m;
-            const sqrtFactor = Math.sqrt(factorials[m] / factorials[n]);
-            const Lmk = associatedLaguerre(m, k, 4 * r2);
+            // ρ_{mn} term: power = (X−iP)^{n-m}
+            const k   = n - m;
+            const sf  = Math.sqrt(factorials[m] / factorials[n]);
+            const Lmk = associatedLaguerre(m, k, r2);
             const sign = (m % 2 === 0) ? 1 : -1;
-
-            // Compute (2(x - ip))^k
             let powRe = 1, powIm = 0;
             for (let i = 0; i < k; i++) {
-              const newRe = powRe * 2 * x + powIm * 2 * p;
-              const newIm = powIm * 2 * x - powRe * 2 * p;
-              powRe = newRe;
-              powIm = newIm;
+              [powRe, powIm] = [
+                powRe * x + powIm * p,
+                powIm * x - powRe * p,
+              ];
             }
-
-            const Wmn_re = prefactor * sign * sqrtFactor * Lmk * powRe;
-            const Wmn_im = prefactor * sign * sqrtFactor * Lmk * powIm;
-
-            // ρ_{mn} * W_{mn} contribution (real part)
-            WmnContrib = rhoMN_re * Wmn_re - rhoMN_im * Wmn_im;
+            W += rRe * pf * sign * sf * Lmk * powRe - rIm * pf * sign * sf * Lmk * powIm;
           } else {
-            // Off-diagonal m > n: use conjugate symmetry
-            // W_{mn} = W_{nm}* and ρ_{mn} = ρ_{nm}*
-            // So ρ_{mn} * W_{mn} = (ρ_{nm} * W_{nm})*, contributing same real part
-            const k = m - n;
-            const sqrtFactor = Math.sqrt(factorials[n] / factorials[m]);
-            const Lnk = associatedLaguerre(n, k, 4 * r2);
+            // ρ_{mn} with m>n term: power = (X+iP)^{m-n}  (complex conjugate)
+            const k   = m - n;
+            const sf  = Math.sqrt(factorials[n] / factorials[m]);
+            const Lnk = associatedLaguerre(n, k, r2);
             const sign = (n % 2 === 0) ? 1 : -1;
-
-            // Compute (2(x + ip))^k for m > n (conjugate of the m < n case)
             let powRe = 1, powIm = 0;
             for (let i = 0; i < k; i++) {
-              const newRe = powRe * 2 * x - powIm * 2 * p;
-              const newIm = powIm * 2 * x + powRe * 2 * p;
-              powRe = newRe;
-              powIm = newIm;
+              [powRe, powIm] = [
+                powRe * x - powIm * p,
+                powIm * x + powRe * p,
+              ];
             }
-
-            const Wmn_re = prefactor * sign * sqrtFactor * Lnk * powRe;
-            const Wmn_im = prefactor * sign * sqrtFactor * Lnk * powIm;
-
-            WmnContrib = rhoMN_re * Wmn_re - rhoMN_im * Wmn_im;
+            W += rRe * pf * sign * sf * Lnk * powRe - rIm * pf * sign * sf * Lnk * powIm;
           }
-
-          W += WmnContrib;
         }
       }
-
       wigner[ix][ip] = W;
     }
   }
-
   return wigner;
+}
+
+function laguerre(n: number, x: number): number {
+  if (n === 0) return 1;
+  if (n === 1) return 1 - x;
+  let L0 = 1, L1 = 1 - x;
+  for (let k = 2; k <= n; k++) { const L2 = ((2*k-1-x)*L1 - (k-1)*L0)/k; L0=L1; L1=L2; }
+  return L1;
+}
+
+function associatedLaguerre(n: number, k: number, x: number): number {
+  if (n === 0) return 1;
+  if (n === 1) return 1 + k - x;
+  let L0 = 1, L1 = 1 + k - x;
+  for (let m = 2; m <= n; m++) { const L2 = ((2*m-1+k-x)*L1 - (m-1+k)*L0)/m; L0=L1; L1=L2; }
+  return L1;
 }
