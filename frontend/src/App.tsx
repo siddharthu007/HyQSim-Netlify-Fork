@@ -5,10 +5,13 @@ import DisplayPanel from './components/DisplayPanel';
 import GateParameterEditor from './components/GateParameterEditor';
 import ImportExportModal from './components/ImportExportModal';
 import BenchmarkMenu from './components/BenchmarkMenu';
+import RabiPlot from './components/RabiPlot';
 import { BENCHMARKS, recomputeCatCDParams } from './benchmarks/circuits';
+import { runJCSweep } from './benchmarks/sweep';
+import type { JCSweepPoint } from './benchmarks/sweep';
 import type { Gate, Wire, CircuitElement, SimulationResult, QubitPostSelection, QubitInitialState, QumodeInitialState } from './types/circuit';
 import { ALL_GATES, getDefaultParameters } from './types/circuit';
-import { runSimulation } from './simulation/simulator';
+import { runSimulation, getQubitBitstringPositions, marginalizeCountsToPositions } from './simulation/simulator';
 import { checkBackendHealth, runBackendSimulation } from './api/backend';
 
 type SimulationBackend = 'browser' | 'python';
@@ -19,6 +22,10 @@ function App() {
   const [fockTruncation, setFockTruncation] = useState(8); // Must be power of 2 for Python backend
   const [simulationResult, setSimulationResult] = useState<SimulationResult | null>(null);
   const [isSimulating, setIsSimulating] = useState(false);
+
+  // JC Rabi-plot state
+  const [activeJCParams, setActiveJCParams] = useState<{ nSteps: number; g: number; omega: number; tau: number } | null>(null);
+  const [jcSweepData, setJcSweepData] = useState<JCSweepPoint[] | null>(null);
 
   // Backend state
   const [backend, setBackend] = useState<SimulationBackend>('browser');
@@ -220,18 +227,36 @@ function App() {
   const handleRunSimulation = useCallback(async () => {
     setIsSimulating(true);
 
+    // Collect wire indices that have a Measure gate placed on them
+    const measuredWireIndices = elements
+      .filter(e => e.gateId === 'measure')
+      .map(e => e.wireIndex);
+
     try {
       if (backend === 'python' && backendAvailable) {
-        // Use Python backend
-        const result = await runBackendSimulation(wires, elements, fockTruncation, postSelections, shots);
-        setSimulationResult(result);
+        // Strip measure gates — the Python backend doesn't know about them
+        const nonMeasureElements = elements.filter(e => e.gateId !== 'measure');
+        const rawResult = await runBackendSimulation(wires, nonMeasureElements, fockTruncation, postSelections, shots);
+
+        // Marginalize bitstrings to only the measured qubits
+        let bitstringCounts = rawResult.bitstringCounts;
+        if (measuredWireIndices.length > 0 && bitstringCounts) {
+          const positions = getQubitBitstringPositions(wires, measuredWireIndices);
+          bitstringCounts = positions.length > 0
+            ? marginalizeCountsToPositions(bitstringCounts, positions)
+            : undefined;
+        } else {
+          bitstringCounts = undefined;
+        }
+
+        setSimulationResult({ ...rawResult, bitstringCounts });
       } else {
         // Use browser-based simulation
         // Use setTimeout to allow UI to update before heavy computation
         await new Promise<void>((resolve) => {
           setTimeout(() => {
             try {
-              const result = runSimulation(wires, elements, gatesMap, fockTruncation, postSelections, shots);
+              const result = runSimulation(wires, elements, gatesMap, fockTruncation, postSelections, shots, measuredWireIndices);
               setSimulationResult(result);
             } catch (error) {
               console.error('Simulation error:', error);
@@ -256,6 +281,19 @@ function App() {
     setQumodeCount(newWires.filter(w => w.type === 'qumode').length);
     setSimulationResult(null);
     setPostSelections([]);
+    setActiveJCParams(null);
+    setJcSweepData(null);
+  }, []);
+
+  const handleClearCanvas = useCallback(() => {
+    setWires([]);
+    setElements([]);
+    setQubitCount(0);
+    setQumodeCount(0);
+    setSimulationResult(null);
+    setPostSelections([]);
+    setActiveJCParams(null);
+    setJcSweepData(null);
   }, []);
 
   const handleLoadBenchmark = useCallback((benchmarkId: string, mode: 'new' | 'append' | 'append-new-qubits', params?: Record<string, number>) => {
@@ -271,6 +309,13 @@ function App() {
       setQumodeCount(bmWires.filter(w => w.type === 'qumode').length);
       setSimulationResult(null);
       setPostSelections([]);
+      // Track JC params so we can offer the Rabi-plot button
+      if (benchmarkId === 'jc-trotter' && params) {
+        setActiveJCParams({ nSteps: params.nSteps ?? 16, g: params.g ?? 1.0, omega: params.omega ?? 1.0, tau: params.tau ?? Math.PI / 32 });
+      } else {
+        setActiveJCParams(null);
+      }
+      setJcSweepData(null);
       return;
     }
 
@@ -414,6 +459,18 @@ function App() {
             {/* Benchmarks + Import/Export */}
             <div className="flex items-center gap-1">
               <BenchmarkMenu onLoadBenchmark={handleLoadBenchmark} hasExistingCircuit={wires.length > 0} hasExistingQubits={wires.some(w => w.type === 'qubit')} />
+              {activeJCParams && (
+                <button
+                  onClick={() => {
+                    const data = runJCSweep(activeJCParams.nSteps, activeJCParams.g, activeJCParams.omega, activeJCParams.tau, fockTruncation);
+                    setJcSweepData(data);
+                  }}
+                  className="px-2 py-1 text-xs bg-cyan-800 hover:bg-cyan-700 rounded transition-colors"
+                  title="Plot ⟨n̂⟩ and ⟨σ_z⟩ vs Trotter step"
+                >
+                  Rabi Plot
+                </button>
+              )}
               <button
                 onClick={() => setQiskitIOMode('import')}
                 className="px-2 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded transition-colors"
@@ -428,6 +485,14 @@ function App() {
                 title="Export as bosonic qiskit code"
               >
                 Export
+              </button>
+              <button
+                onClick={handleClearCanvas}
+                disabled={wires.length === 0}
+                className="px-2 py-1 text-xs bg-red-900 hover:bg-red-800 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                title="Clear all wires and gates"
+              >
+                Clear
               </button>
             </div>
 
@@ -483,6 +548,7 @@ function App() {
             onPostSelectionsChange={setPostSelections}
             shots={shots}
             onShotsChange={setShots}
+            measuredWireIndices={elements.filter(e => e.gateId === 'measure').map(e => e.wireIndex)}
           />
         </aside>
       </div>
@@ -507,6 +573,15 @@ function App() {
           />
         );
       })()}
+
+      {/* Rabi Oscillation Plot Modal */}
+      {jcSweepData && activeJCParams && (
+        <RabiPlot
+          data={jcSweepData}
+          params={activeJCParams}
+          onClose={() => setJcSweepData(null)}
+        />
+      )}
 
       {/* Import/Export Modal */}
       {qiskitIOMode && (

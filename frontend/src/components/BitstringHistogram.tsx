@@ -7,18 +7,20 @@ export default function BitstringHistogram({ counts, totalShots }: BitstringHist
   const entries = Object.entries(counts).sort(([a], [b]) => a.localeCompare(b));
   if (entries.length === 0) return null;
 
-  // Y-axis scales to totalShots so bars show absolute proportion
-  const yMax = totalShots;
+  const maxCount = Math.max(...entries.map(([, c]) => c), 1);
+  // Y-axis ceiling = 1.5× the tallest bar (in counts), so the max bar fills ~2/3 of the chart
+  const yMax = maxCount * 1.5;
 
-  const barWidth = Math.max(24, Math.min(50, 400 / entries.length));
+  const barWidth = Math.max(20, Math.min(50, 400 / entries.length));
   const chartHeight = 200;
   const marginTop = 24;
-  const marginBottom = 40;
+  // Bottom margin scales with label length so rotated bitstrings never clip
+  const maxLabelLen = entries.reduce((m, [bs]) => Math.max(m, bs.length), 0);
+  const marginBottom = 12 + maxLabelLen * 7;
   const marginLeft = 48;
   const svgWidth = marginLeft + entries.length * (barWidth + 6) + 10;
   const svgHeight = chartHeight + marginTop + marginBottom;
 
-  // Y-axis tick values: 0, 25%, 50%, 75%, 100% of totalShots
   const yTicks = [0, 0.25, 0.5, 0.75, 1];
 
   return (
@@ -37,6 +39,8 @@ export default function BitstringHistogram({ counts, totalShots }: BitstringHist
         {yTicks.map((frac) => {
           const y = marginTop + chartHeight * (1 - frac);
           const val = Math.round(yMax * frac);
+          // Only label ticks that fall on whole numbers; skip the ceiling tick (frac=1 → yMax = 1.5×max)
+          const showLabel = frac < 1;
           return (
             <g key={frac}>
               <line
@@ -45,9 +49,11 @@ export default function BitstringHistogram({ counts, totalShots }: BitstringHist
                 stroke="#334155" strokeWidth={1}
                 strokeDasharray={frac > 0 ? '3,3' : 'none'}
               />
-              <text x={marginLeft - 6} y={y + 3} textAnchor="end" fill="#94a3b8" fontSize={9}>
-                {val}
-              </text>
+              {showLabel && (
+                <text x={marginLeft - 6} y={y + 3} textAnchor="end" fill="#94a3b8" fontSize={9}>
+                  {val}
+                </text>
+              )}
             </g>
           );
         })}
@@ -57,6 +63,8 @@ export default function BitstringHistogram({ counts, totalShots }: BitstringHist
           const barHeight = yMax > 0 ? (count / yMax) * chartHeight : 0;
           const x = marginLeft + i * (barWidth + 6) + 6;
           const y = marginTop + chartHeight - barHeight;
+          const labelX = x + barWidth / 2;
+          const labelY = marginTop + chartHeight + 6;
           return (
             <g key={bitstring}>
               <rect
@@ -71,11 +79,12 @@ export default function BitstringHistogram({ counts, totalShots }: BitstringHist
               >
                 {count}
               </text>
-              {/* Bitstring label below */}
+              {/* Bitstring label — rotated 90° so it reads top-to-bottom */}
               <text
-                x={x + barWidth / 2}
-                y={marginTop + chartHeight + 14}
-                textAnchor="middle" fill="#cbd5e1" fontSize={10}
+                transform={`translate(${labelX},${labelY}) rotate(90)`}
+                textAnchor="start"
+                fill="#cbd5e1"
+                fontSize={10}
                 fontFamily="monospace"
               >
                 {bitstring}
