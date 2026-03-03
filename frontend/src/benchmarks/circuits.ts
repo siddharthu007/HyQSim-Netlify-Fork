@@ -48,7 +48,7 @@ function mkGate(
   gateId: string,
   wireIndex: number,
   x: number,
-  opts?: { targets?: number[]; params?: Record<string, number>; benchmarkGroup?: string },
+  opts?: { targets?: number[]; params?: Record<string, number>; benchmarkGroup?: string; generator?: string },
 ): CircuitElement {
   return {
     id: uid('el'),
@@ -58,6 +58,7 @@ function mkGate(
     targetWireIndices: opts?.targets,
     parameterValues: opts?.params,
     benchmarkGroup: opts?.benchmarkGroup,
+    generatorExpression: opts?.generator,
   };
 }
 
@@ -67,7 +68,8 @@ function mkGate(
  *
  * Creates a Schrödinger cat state |α⟩ + |−α⟩ in the qumode.
  */
-export function catStateCircuit(alpha: number = 2.0, fock: number = 32): BenchmarkCircuit {
+// Default alpha = 2√2 so the CD gate shows alpha_re = 2 (integer) by default
+export function catStateCircuit(alpha: number = 2 * Math.sqrt(2), fock: number = 32): BenchmarkCircuit {
   _uid = 0;
   const sqrt2 = Math.sqrt(2);
   const cd1Re = alpha / sqrt2;
@@ -165,6 +167,11 @@ export function stateTransferCVtoDV(n: number = 3, lambda: number = 0.29, fock: 
       elements.push(mkGate('x', wireIdx, x += step));
     }
     x += step;
+  }
+
+  // Measure all qubits at the end
+  for (let i = 1; i <= n; i++) {
+    elements.push(mkGate('measure', i, x));
   }
 
   return { wires, elements, fockTruncation: fock };
@@ -272,6 +279,49 @@ export function recomputeCatCDParams(
   }
 }
 
+/**
+ * Jaynes-Cummings Trotter Circuit
+ *
+ * Simulates the single-site JC Hamiltonian H = ω(n + σ_z/2) + g(σ₊a + σ₋a†)
+ * via first-order Trotterisation over nSteps steps of size tau:
+ *   U_step ≈ R(ω·τ) ⊗ Rz(ω·τ) · JC(g·τ)
+ *
+ * Initial state: qubit |1⟩ (excited) ⊗ qumode |0⟩ (vacuum).
+ * On resonance with g·τ·nSteps = π/2 the excitation fully transfers to the cavity.
+ */
+export function jcTrotterCircuit(
+  nSteps: number = 10,
+  g: number = 1.0,
+  omega: number = 1.0,
+  tau: number = 0.1,
+  fock: number = 8,
+): BenchmarkCircuit {
+  _uid = 0;
+
+  const wires = [
+    mkWire('qumode', 0),
+    mkWire('qubit', 1, '1'), // excited state
+  ];
+
+  const elements: CircuitElement[] = [];
+  let x = 30;
+  const step = 60;
+
+  const steps = Math.round(Math.max(1, nSteps));
+  for (let i = 0; i < steps; i++) {
+    // Cavity free rotation R(ω·τ)
+    elements.push(mkGate('rotate', 0, x, { params: { theta: omega * tau } }));
+    // Qubit Rz(−ω·τ): correct sign because |1⟩=excited must have higher energy.
+    // Rz(θ) = exp(−iθZ/2); Z|1⟩=−1, so excited energy = +ωτ/2 requires θ = −ωτ.
+    elements.push(mkGate('rz', 1, x += step, { params: { theta: -omega * tau } }));
+    // Jaynes-Cummings coupling JC(g·τ)
+    elements.push(mkGate('jc', 1, x += step, { targets: [0], params: { theta: g * tau } }));
+    x += step;
+  }
+
+  return { wires, elements, fockTruncation: fock };
+}
+
 const STATE_TRANSFER_PARAMS: BenchmarkParam[] = [
   { name: 'n', label: 'Number of qubits', defaultValue: 3, min: 1, max: 6, step: 1 },
   { name: 'lambda', label: 'Lambda (λ)', defaultValue: 0.29, min: 0.01, max: 2, step: 0.01 },
@@ -297,5 +347,18 @@ export const BENCHMARKS: BenchmarkDefinition[] = [
     description: 'State transfer from qubits to qumode',
     params: STATE_TRANSFER_PARAMS,
     build: (p) => stateTransferDVtoCV(p?.n ?? 3, p?.lambda ?? 0.29),
+  },
+  {
+    id: 'jc-trotter',
+    name: 'JC Trotter',
+    description: 'Jaynes-Cummings vacuum Rabi oscillation via Trotter decomposition',
+    params: [
+      // Default: resonant JC (ω=g=1), 16 steps × τ=π/32 → exactly one half-Rabi cycle (|e,0⟩ → |g,1⟩)
+      { name: 'nSteps', label: 'Trotter steps', defaultValue: 16, min: 1, max: 64, step: 1 },
+      { name: 'g', label: 'Coupling g', defaultValue: 1.0, min: 0.1, max: 5, step: 0.1 },
+      { name: 'omega', label: 'Frequency ω', defaultValue: 1.0, min: 0.1, max: 5, step: 0.1 },
+      { name: 'tau', label: 'Step size τ', defaultValue: Math.PI / 32, min: 0.01, max: 0.5, step: 0.01 },
+    ],
+    build: (p) => jcTrotterCircuit(p?.nSteps ?? 16, p?.g ?? 1.0, p?.omega ?? 1.0, p?.tau ?? Math.PI / 32),
   },
 ];
